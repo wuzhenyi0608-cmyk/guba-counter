@@ -394,7 +394,6 @@ HTML = """
             <div class="info">
                 页码范围：第 {{ result.first_page }} 页 到 第 {{ result.last_page }} 页；
                 共 {{ result.total_pages }} 页；
-                每页按 {{ result.page_size }} 条计算；
                 耗时 {{ result.cost_seconds }} 秒。
             </div>
         </div>
