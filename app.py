@@ -6,12 +6,68 @@ from datetime import date
 from flask import Flask, request, render_template_string
 
 
+def get_stock_name_by_code(stock_code: str):
+    """
+    根据股票代码获取股票名称。
+    例如：
+    000725 -> 京东方A
+    301122 -> 采纳股份
+    """
+    stock_code = str(stock_code).strip()
+
+    if not re.fullmatch(r"\d{6}", stock_code):
+        return ""
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://quote.eastmoney.com/",
+    }
+
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+
+    params = {
+        "pn": "1",
+        "pz": "10000",
+        "po": "1",
+        "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f3",
+        "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+        "fields": "f12,f14",
+    }
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+
+        diff = data.get("data", {}).get("diff", [])
+
+        for item in diff:
+            code = str(item.get("f12", "")).strip()
+            name = str(item.get("f14", "")).strip()
+
+            if code == stock_code:
+                return name
+
+    except Exception:
+        return ""
+
+    return ""
+
+
 class EastmoneyGubaFastPageCounter:
     def __init__(
         self,
         stock_code: str,
         target_date_str: str,
-        max_pages: int = 5000,
+        max_pages: int = 10000,
         page_size: int = 65,
     ):
         self.stock_code = stock_code.strip()
@@ -70,8 +126,6 @@ class EastmoneyGubaFastPageCounter:
 
         text = resp.text
 
-        # 返回格式：
-        # var webarticlelist_api_Article_Articlelist=article_list({...});
         m = re.search(rf"{callback_name}\((.*)\);?", text, re.S)
 
         if not m:
@@ -119,7 +173,6 @@ class EastmoneyGubaFastPageCounter:
                 "error": "未解析到日期",
             }
 
-        # YYYY-MM-DD 字符串可以直接比较大小
         return {
             "ok": True,
             "page": page_num,
@@ -229,9 +282,7 @@ class EastmoneyGubaFastPageCounter:
 
         1. 二分找到目标日期出现的第一页
         2. 二分找到目标日期出现的最后一页
-        3. 直接计算：
-
-           当天帖子数量 = 日期页数 × 65
+        3. 直接计算：当天帖子数量 = 日期页数 × 65
 
         不逐条统计，不过滤作者，不校正第一页/最后一页。
         """
@@ -241,10 +292,12 @@ class EastmoneyGubaFastPageCounter:
         last_page, last_info, total_count2 = self.find_last_page()
 
         total_count = total_count1 or total_count2
+        stock_name = get_stock_name_by_code(self.stock_code)
 
         if first_page is None or last_page is None:
             return {
                 "stock_code": self.stock_code,
+                "stock_name": stock_name,
                 "target_date": self.target_date_str,
                 "total_posts": 0,
                 "first_page": 0,
@@ -261,6 +314,7 @@ class EastmoneyGubaFastPageCounter:
 
         return {
             "stock_code": self.stock_code,
+            "stock_name": stock_name,
             "target_date": self.target_date_str,
             "total_posts": total_posts,
             "first_page": first_page,
@@ -269,11 +323,21 @@ class EastmoneyGubaFastPageCounter:
             "page_size": self.page_size,
             "total_count": total_count,
             "cost_seconds": round(time.time() - start_ts, 2),
-            "message": f"极速估算完成：第 {first_page} 页到第 {last_page} 页，共 {total_pages} 页 × {self.page_size} 条 = {total_posts} 条。",
+            "message": f"极速估算完成：第 {first_page} 页到第 {last_page} 页，共 {total_pages} 页。",
         }
 
 
 app = Flask(__name__)
+
+
+@app.route("/stock_name")
+def stock_name_api():
+    stock_code = request.args.get("code", "").strip()
+    name = get_stock_name_by_code(stock_code)
+    return {
+        "code": stock_code,
+        "name": name
+    }
 
 
 HTML = """
@@ -290,7 +354,7 @@ HTML = """
             padding: 40px;
         }
         .box {
-            max-width: 760px;
+            max-width: 860px;
             margin: auto;
             background: white;
             border-radius: 12px;
@@ -315,8 +379,9 @@ HTML = """
             border-radius: 8px;
             width: 170px;
         }
-        input[name="stock_code"] {
-            width: 170px;
+        input[readonly] {
+            background: #f7f7f7;
+            color: #555;
         }
         button {
             padding: 12px 24px;
@@ -367,8 +432,13 @@ HTML = """
     <form method="get">
         <label>
             股票代码：
-            <input name="stock_code" placeholder="例如 301122、000725"
+            <input id="stock_code_input" name="stock_code" placeholder="例如 301122、000725"
                    value="{{ stock_code or '' }}">
+        </label>
+
+        <label>
+            股票名称：
+            <input id="stock_name_input" readonly placeholder="自动识别">
         </label>
 
         <label>
@@ -387,6 +457,7 @@ HTML = """
     {% if result %}
         <div class="result">
             <div>股票代码：<strong>{{ result.stock_code }}</strong></div>
+            <div>股票名称：<strong>{{ result.stock_name or '未识别' }}</strong></div>
             <div>查询日期：<strong>{{ result.target_date }}</strong></div>
             <div>当天帖子数量：</div>
             <div class="count">{{ result.total_posts }}</div>
@@ -399,6 +470,42 @@ HTML = """
         </div>
     {% endif %}
 </div>
+
+<script>
+    async function updateStockName() {
+        const codeInput = document.getElementById("stock_code_input");
+        const nameInput = document.getElementById("stock_name_input");
+
+        const code = codeInput.value.trim();
+
+        if (!/^[0-9]{6}$/.test(code)) {
+            nameInput.value = "";
+            return;
+        }
+
+        try {
+            const response = await fetch(`/stock_name?code=${encodeURIComponent(code)}`);
+            const data = await response.json();
+
+            if (data.name) {
+                nameInput.value = data.name;
+            } else {
+                nameInput.value = "未识别";
+            }
+        } catch (e) {
+            nameInput.value = "获取失败";
+        }
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+        const codeInput = document.getElementById("stock_code_input");
+
+        codeInput.addEventListener("input", updateStockName);
+        codeInput.addEventListener("blur", updateStockName);
+
+        updateStockName();
+    });
+</script>
 </body>
 </html>
 """
@@ -409,7 +516,6 @@ def index():
     stock_code = request.args.get("stock_code", "").strip()
     target_date_str = request.args.get("target_date", "").strip()
 
-    # 后台默认参数
     max_pages = 10000
     page_size = 65
 
